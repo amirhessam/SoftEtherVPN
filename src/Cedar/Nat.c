@@ -1304,7 +1304,10 @@ void NiSetDefaultVhOption(NAT *n, VH_OPTION *o)
 	SetIP(&o->Ip, 192, 168, 30, 1);
 	SetIP(&o->Mask, 255, 255, 255, 0);
 	o->UseNat = true;
-	o->Mtu = 1500;
+	// Leave room for the VPN header. A 1500-byte inner packet becomes larger
+	// than the path MTU, and upload stalls when ICMP fragmentation messages
+	// are dropped.
+	o->Mtu = 1280;
 	o->NatTcpTimeout = 1800;
 	o->NatUdpTimeout = 60;
 	o->UseDhcp = true;

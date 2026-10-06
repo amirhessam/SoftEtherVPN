@@ -5,7 +5,15 @@ permissions:
 
 jobs:
   build_and_test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            artifact: deb-packages-amd64
+          - runner: ubuntu-24.04-arm
+            artifact: deb-packages-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -30,7 +38,7 @@ jobs:
       if: github.ref == 'refs/heads/master'
       uses: actions/upload-artifact@v4
       with:
-        name: deb-packages
+        name: ${{ matrix.artifact }}
         path: build/*.deb
 
     - name: Test
