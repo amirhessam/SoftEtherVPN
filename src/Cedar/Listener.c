@@ -209,6 +209,151 @@ void TCPAcceptedThread(THREAD *t, void *param)
 	ReleaseListener(r);
 }
 
+static bool RecvAll(SOCK *s, UINT size)
+{
+	char trash[128];
+	// Validate arguments
+	if (s == NULL)
+	{
+		return false;
+	}
+	while (size > 0)
+	{
+		UINT want = MIN(size, sizeof(trash));
+		UINT n = Recv(s, trash, want, false);
+		if (n == 0 || n == SOCK_LATER || n > want)
+		{
+			return false;
+		}
+		size -= n;
+	}
+	return true;
+}
+
+// nginx stream sends a PROXY protocol v1 header when it connects from localhost.
+// Replace the socket peer with that client so per-IP limits and access lists
+// see the real address. Replies still travel back through the same TCP socket.
+static bool ApplyLocalProxyProtocol(SOCK *s)
+{
+	char buf[128];
+	UINT64 start;
+	char *eol;
+	TOKEN_LIST *tokens;
+	UINT header_len;
+	UINT i;
+	IP client_ip;
+	UINT client_port;
+	// Validate arguments
+	if (s == NULL || s->Type != SOCK_TCP || IsLocalHostIP(&s->RemoteIP) == false)
+	{
+		return true;
+	}
+
+	// Do not block the accept thread on a client that never sends this header.
+	SetTimeout(s, 1000);
+	start = Tick64();
+	Zero(buf, sizeof(buf));
+	eol = NULL;
+
+	while (true)
+	{
+		UINT got = Peek(s, buf, sizeof(buf) - 1);
+
+		if (got > 0)
+		{
+			buf[got] = 0;
+		}
+
+		if (got >= 6)
+		{
+			if (StartWith(buf, "PROXY ") == false)
+			{
+				SetTimeout(s, TIMEOUT_INFINITE);
+				return true;
+			}
+		}
+		else
+		{
+			for (i = 0; i < got; i++)
+			{
+				if (buf[i] != "PROXY "[i])
+				{
+					SetTimeout(s, TIMEOUT_INFINITE);
+					return true;
+				}
+			}
+		}
+
+		for (i = 0; i + 1 < got; i++)
+		{
+			if (buf[i] == '\r' && buf[i + 1] == '\n')
+			{
+				eol = &buf[i];
+				break;
+			}
+		}
+		if (eol != NULL)
+		{
+			break;
+		}
+		if (got >= 107 || (start + 1000) < Tick64())
+		{
+			SetTimeout(s, TIMEOUT_INFINITE);
+			return got == 0 || StartWith(buf, "PROXY ") == false;
+		}
+		SleepThread(10);
+	}
+	SetTimeout(s, TIMEOUT_INFINITE);
+
+	*eol = 0;
+	header_len = (UINT)(eol - buf) + 2;
+
+	tokens = ParseToken(buf, " ");
+	if (tokens == NULL || tokens->NumTokens < 2 || StrCmpi(tokens->Token[0], "PROXY") != 0)
+	{
+		FreeToken(tokens);
+		return false;
+	}
+
+	if (StrCmpi(tokens->Token[1], "UNKNOWN") == 0)
+	{
+		FreeToken(tokens);
+	}
+	else if ((StrCmpi(tokens->Token[1], "TCP4") == 0 || StrCmpi(tokens->Token[1], "TCP6") == 0) &&
+		tokens->NumTokens >= 6 && StrToIP(&client_ip, tokens->Token[2]))
+	{
+		client_port = ToInt(tokens->Token[4]);
+		FreeToken(tokens);
+		if (client_port < 1 || client_port > 65535)
+		{
+			return false;
+		}
+		if (RecvAll(s, header_len) == false)
+		{
+			return false;
+		}
+		Copy(&s->RemoteIP, &client_ip, sizeof(IP));
+		s->RemotePort = client_port;
+		if (IsLocalHostIP(&s->RemoteIP) == false && s->IpClientAdded == false)
+		{
+			s->IpClientAdded = true;
+			AddIpClient(&s->RemoteIP);
+		}
+		return true;
+	}
+	else
+	{
+		FreeToken(tokens);
+		return false;
+	}
+
+	if (RecvAll(s, header_len) == false)
+	{
+		return false;
+	}
+	return true;
+}
+
 // Jump here if there is accepted connection in the TCP
 void TCPAccepted(LISTENER *r, SOCK *s)
 {
@@ -224,6 +369,12 @@ void TCPAccepted(LISTENER *r, SOCK *s)
 	}
 
 	cedar = r->Cedar;
+
+	if (ApplyLocalProxyProtocol(s) == false)
+	{
+		Disconnect(s);
+		return;
+	}
 
 	num_clients_from_this_ip = GetNumIpClient(&s->RemoteIP);
 

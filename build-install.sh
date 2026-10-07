@@ -35,6 +35,14 @@ esac
 
 echo "Building SoftEther VPN for ${arch_kind} (${arch})"
 
+remove_incomplete_liboqs() {
+	# A killed clone leaves an empty directory, and the next update waits on it.
+	if [ -d src/Mayaqua/3rdparty/liboqs ] && [ ! -f src/Mayaqua/3rdparty/liboqs/CMakeLists.txt ]; then
+		echo "Removing incomplete liboqs checkout."
+		rm -rf src/Mayaqua/3rdparty/liboqs .git/modules/src/Mayaqua/3rdparty/liboqs
+	fi
+}
+
 install_dependencies() {
 	if command -v apt-get >/dev/null 2>&1; then
 		$SUDO apt-get update
@@ -55,10 +63,22 @@ install_dependencies() {
 	fi
 }
 
+if [ "${BUILD_INSTALL_SOURCE_ONLY:-}" = 1 ]; then
+	return 0 2>/dev/null || exit 0
+fi
+
 install_dependencies
 
 if [ -d .git ]; then
-	git submodule update --init --recursive
+	echo "Fetching third-party libraries. liboqs is large; progress lines mean the download is still running."
+	# --depth 1 avoids the full liboqs history. Nested submodules are not used by this build.
+	# GIT_TERMINAL_PROMPT=0 makes a credential wait fail instead of sitting forever.
+	remove_incomplete_liboqs
+	if ! GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 submodule update --init --depth 1 --progress; then
+		echo "Shallow fetch failed. Retrying with full history."
+		remove_incomplete_liboqs
+		GIT_TERMINAL_PROMPT=0 git -c http.version=HTTP/1.1 submodule update --init --progress
+	fi
 fi
 
 ./configure
