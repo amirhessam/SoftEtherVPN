@@ -209,7 +209,7 @@ void TCPAcceptedThread(THREAD *t, void *param)
 	ReleaseListener(r);
 }
 
-static bool RecvAll(SOCK *s, UINT size)
+static bool RecvDiscard(SOCK *s, UINT size)
 {
 	char trash[128];
 	// Validate arguments
@@ -328,7 +328,7 @@ static bool ApplyLocalProxyProtocol(SOCK *s)
 		{
 			return false;
 		}
-		if (RecvAll(s, header_len) == false)
+		if (RecvDiscard(s, header_len) == false)
 		{
 			return false;
 		}
@@ -347,7 +347,7 @@ static bool ApplyLocalProxyProtocol(SOCK *s)
 		return false;
 	}
 
-	if (RecvAll(s, header_len) == false)
+	if (RecvDiscard(s, header_len) == false)
 	{
 		return false;
 	}
